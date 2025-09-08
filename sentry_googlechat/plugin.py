@@ -161,9 +161,16 @@ class GoogleChatPlugin(CorePluginMixin, notify.NotificationPlugin):
         sections.append({ "widgets": buttons })
 
         title = '[%s] %s' % (project_name, event_title)
-        payload = {"cards": [
-            { "header": { "title": title, "subtitle": event_message },
-             "sections": sections } ]}
+        text_message = '%s\n%s' % (title, event_message)
+        payload = {
+            "text": text_message,
+            "cards": [
+                {
+                    "header": {"title": title, "subtitle": event_message},
+                    "sections": sections,
+                }
+            ],
+        }
 
         webhook = self.get_option('webhook', project)
         return safe_urlopen(webhook, method='POST', data=json.dumps(payload))
