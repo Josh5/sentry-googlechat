@@ -9,6 +9,7 @@ from sentry_plugins.base import CorePluginMixin
 
 from . import __version__, __doc__ as package_doc
 
+
 class GoogleChatPlugin(CorePluginMixin, notify.NotificationPlugin):
     description = package_doc
     version = __version__
@@ -44,6 +45,17 @@ class GoogleChatPlugin(CorePluginMixin, notify.NotificationPlugin):
                 'placeholder': 'e.g. https://chat.googleapis.com/v1/spaces/ABCDEF123/messages?key=abcde-12345-5555-1111-eeee&token=abcdef12345678',
                 'required': True,
                 'help': 'Google Chat Incoming Webhook URL'
+            },
+            {
+                'name': 'webhook_tag_overrides',
+                'label': 'Tag-specific Webhooks',
+                'type': 'textarea',
+                'required': False,
+                'help': (
+                    "Define `tag_key:tag_value=https://...` rules, one per line. "
+                    "Use `*` as a wildcard for the key or value, and comment lines with `#`. "
+                    "The first matching rule overrides the default webhook."
+                ),
             },
             {
                 "name": "include_tags",
@@ -92,6 +104,69 @@ class GoogleChatPlugin(CorePluginMixin, notify.NotificationPlugin):
             return None
         return set(tag.strip().lower() for tag in option.split(","))
 
+    def get_webhook_rules(self, project):
+        option = self.get_option("webhook_tag_overrides", project)
+        if not option:
+            return []
+
+        rules = []
+        for raw_line in option.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            try:
+                target, webhook = line.split("=", 1)
+            except ValueError:
+                continue
+
+            webhook = webhook.strip()
+            if not webhook:
+                continue
+
+            target = target.strip()
+            if ":" in target:
+                tag_key, tag_value = target.split(":", 1)
+            else:
+                tag_key, tag_value = target, "*"
+
+            tag_key = tag_key.strip().lower() or "*"
+            tag_value = tag_value.strip().lower() or "*"
+            rules.append({"key": tag_key, "value": tag_value, "webhook": webhook})
+
+        return rules
+
+    def _iter_event_tag_pairs(self, event):
+        if not getattr(event, "tags", None):
+            return
+
+        for raw_key, raw_value in event.tags:
+            key = (raw_key or "").lower()
+            value = (raw_value or "").lower()
+            std_key = tagstore.get_standardized_key(raw_key or "")
+            yield key, value
+            if std_key and std_key.lower() != key:
+                yield std_key.lower(), value
+
+    def get_webhook_for_event(self, project, event):
+        default_webhook = self.get_option("webhook", project)
+        if not default_webhook:
+            return None
+
+        rules = self.get_webhook_rules(project)
+        if not rules:
+            return default_webhook
+
+        matched_tags = list(self._iter_event_tag_pairs(event))
+        for rule in rules:
+            for tag_key, tag_value in matched_tags:
+                if (rule["key"] == "*" or rule["key"] == tag_key) and (
+                    rule["value"] == "*" or rule["value"] == tag_value
+                ):
+                    return rule["webhook"]
+
+        return default_webhook
+
     def _get_tags(self, event):
         tag_list = event.tags
         if not tag_list:
@@ -116,7 +191,7 @@ class GoogleChatPlugin(CorePluginMixin, notify.NotificationPlugin):
             if excluded_tags and (key in excluded_tags or std_key in excluded_tags):
                 continue
 
-            tags.append({ "keyValue": { "topLabel": tag_key, "content": tag_value }})
+            tags.append({"keyValue": {"topLabel": tag_key, "content": tag_value}})
         return tags
 
     def notify(self, notification, raise_exception=False):
@@ -139,26 +214,26 @@ class GoogleChatPlugin(CorePluginMixin, notify.NotificationPlugin):
         sections = []
         widgets = []
         if not self.get_option("exclude_project", project):
-            widgets.append({ "keyValue": { "topLabel": "Project", "content": project_name }})
+            widgets.append({"keyValue": {"topLabel": "Project", "content": project_name}})
 
         if not self.get_option("exclude_culprit", project) and culprit and event_title != culprit:
-            widgets.append({ "keyValue": { "topLabel": "Culprit", "content": culprit }})
+            widgets.append({"keyValue": {"topLabel": "Culprit", "content": culprit}})
 
         times_seen = 'Seen %s times' % group.times_seen
         first_seen = 'First seen %s' % group.first_seen.strftime("%b %d, %Y %H:%M:%S %p %Z")
-        widgets.append({ "keyValue": { "topLabel": "Times Seen", "content": times_seen,
-                                      "bottomLabel": first_seen }})
+        widgets.append({"keyValue": {"topLabel": "Times Seen", "content": times_seen,
+                                     "bottomLabel": first_seen}})
 
-        sections.append({ "widgets": widgets })
+        sections.append({"widgets": widgets})
 
         tags = self.build_tags_widget(project, event)
         if tags:
-            sections.append({ "header": "Tags", "widgets": tags })
+            sections.append({"header": "Tags", "widgets": tags})
 
         url = group.get_absolute_url()
         buttons = {"buttons": [{"textButton": {"text": "OPEN IN SENTRY",
-                                               "onClick": {"openLink": { "url": url }}}}]}
-        sections.append({ "widgets": buttons })
+                                               "onClick": {"openLink": {"url": url}}}}]}
+        sections.append({"widgets": buttons})
 
         title = '[%s] %s' % (project_name, event_title)
         text_message = '%s\n%s' % (title, event_message)
@@ -172,5 +247,8 @@ class GoogleChatPlugin(CorePluginMixin, notify.NotificationPlugin):
             ],
         }
 
-        webhook = self.get_option('webhook', project)
+        webhook = self.get_webhook_for_event(project, event)
+        if not webhook:
+            return
+
         return safe_urlopen(webhook, method='POST', data=json.dumps(payload))

@@ -37,6 +37,23 @@ There are some other optional configuration options at the moment, but the WebHo
 
 When ready, click 'Test Plugin' to generate an exception and send a message to your chosen WebHook URL.
 
+### Tag-specific webhooks
+
+If you want different alerts to go to different spaces, use the new **Tag-specific Webhooks** textarea.
+Each line describes one rule in the format `tag_key:tag_value=https://...`. The plugin checks events against the
+rules in order and uses the first webhook whose rule matches; if no rule matches it keeps using the default
+Webhook URL configured above. Use `*` as a wildcard for the tag key or value and start a line with `#` to add a
+comment that will be ignored.
+
+Example:
+
+```
+environment:production=https://chat.googleapis.com/v1/spaces/.../prod?key=...
+environment:staging=https://chat.googleapis.com/v1/spaces/.../staging?key=...
+# fall back to the default webhook
+*:*=https://chat.googleapis.com/v1/spaces/.../default?key=...
+```
+
 
 ## Bugs and Feedback
 
